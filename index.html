@@ -1,32 +1,289 @@
-async function createAndJoinRoom(roomId: string) {
-  // 若舊有 channel 存在，先作廢或退訂
-  const channelName = `realtime:${roomId}`;
-  
-  // 建立 Channel
-  const channel = supabase.channel(channelName);
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Supabase Realtime 房間系統 v1.1</title>
+  <!-- 載入 Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      background-color: #0f172a;
+      color: #f8fafc;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .header-bar {
+      width: 100%;
+      max-width: 600px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .version-badge {
+      background-color: #3b82f6;
+      color: #ffffff;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      font-weight: bold;
+    }
+    .card {
+      background-color: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 20px;
+      width: 100%;
+      max-width: 600px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+      margin-bottom: 16px;
+    }
+    h2 {
+      font-size: 1.25rem;
+      margin-bottom: 12px;
+      color: #38bdf8;
+    }
+    .input-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      margin-bottom: 4px;
+      color: #94a3b8;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #475569;
+      background-color: #0f172a;
+      color: #fff;
+      font-size: 0.95rem;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    .btn-primary { background-color: #2563eb; color: #fff; }
+    .btn-primary:hover { background-color: #1d4ed8; }
+    .btn-danger { background-color: #dc2626; color: #fff; }
+    .btn-danger:hover { background-color: #b91c1c; }
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      margin-left: 8px;
+    }
+    .status-disconnected { background-color: #64748b; }
+    .status-connected { background-color: #16a34a; }
+    pre {
+      background-color: #090d16;
+      border: 1px solid #1e293b;
+      padding: 12px;
+      border-radius: 6px;
+      color: #4ade80;
+      font-family: monospace;
+      font-size: 0.85rem;
+      max-height: 250px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
 
-  // 綁定資料庫變更事件 (必須在 subscribe 前)
-  channel.on(
-    'postgres_changes',
-    {
-      event: 'INSERT', // 或 '*'
-      schema: 'public',
-      table: 'rooms',
-      filter: `id=eq.${roomId}`
-    },
-    (payload) => {
-      // 處理房間狀態更新
-      console.log('Room updated:', payload.new);
-    }
-  );
+  <!-- 頂部列：顯示版本資訊 -->
+  <div class="header-bar">
+    <span class="version-badge">v1.1</span>
+    <span id="connection-status" class="status-badge status-disconnected">未連線</span>
+  </div>
 
-  // 最後才發起連線
-  channel.subscribe((status, err) => {
-    if (status === 'SUBSCRIBED') {
-      // 連線成功後才進行「建立房間」或「更新房間 state」等邏輯
+  <!-- 設定卡片 -->
+  <div class="card">
+    <h2>1. Supabase 金鑰設定</h2>
+    <div class="input-group">
+      <label for="supabase-url">Supabase URL</label>
+      <input type="text" id="supabase-url" placeholder="https://your-project.supabase.co">
+    </div>
+    <div class="input-group">
+      <label for="supabase-key">Anon Key</label>
+      <input type="password" id="supabase-key" placeholder="your-anon-key">
+    </div>
+  </div>
+
+  <!-- 房間控制卡片 -->
+  <div class="card">
+    <h2>2. 建立/加入遊戲房間</h2>
+    <div class="input-group">
+      <label for="room-id">房間 ID (UUID 或 自訂名稱)</label>
+      <input type="text" id="room-id" value="game-38746825-1a9d-48c1-b863-c90f4601b4fc">
+    </div>
+    <div class="input-group">
+      <label for="host-id">玩家/房主 ID</label>
+      <input type="text" id="host-id" value="player-101">
+    </div>
+    <div class="btn-group">
+      <button class="btn-primary" onclick="initAndSubscribeRoom()">建立並訂閱房間</button>
+      <button class="btn-danger" onclick="leaveCurrentRoom()">退出房間</button>
+    </div>
+  </div>
+
+  <!-- 日誌輸出卡片 -->
+  <div class="card">
+    <h2>3. 即時資料庫變更日誌 (Realtime Output)</h2>
+    <pre id="log-output">// 系統日誌將顯示於此...</pre>
+  </div>
+
+  <script>
+    let supabase = null;
+    let currentChannel = null;
+
+    function log(message, obj = null) {
+      const output = document.getElementById('log-output');
+      const timestamp = new Date().toLocaleTimeString();
+      let text = `[${timestamp}] ${message}`;
+      if (obj) {
+        text += '\n' + JSON.stringify(obj, null, 2);
+      }
+      output.innerText = text + '\n\n' + output.innerText;
     }
-    if (err) {
-      console.error('Subscription error:', err);
+
+    function updateStatus(statusText, isConnected) {
+      const badge = document.getElementById('connection-status');
+      badge.innerText = statusText;
+      badge.className = `status-badge ${isConnected ? 'status-connected' : 'status-disconnected'}`;
     }
-  });
-}
+
+    async function initAndSubscribeRoom() {
+      const url = document.getElementById('supabase-url').value.trim();
+      const key = document.getElementById('supabase-key').value.trim();
+      const roomId = document.getElementById('room-id').value.trim();
+      const hostId = document.getElementById('host-id').value.trim();
+
+      if (!url || !key) {
+        alert('請先輸入 Supabase URL 與 Anon Key！');
+        return;
+      }
+
+      if (!roomId) {
+        alert('請輸入房間 ID！');
+        return;
+      }
+
+      // 1. 初始化 Supabase Client
+      if (!supabase) {
+        supabase = window.supabase.createClient(url, key);
+        log('Supabase Client 初始化成功');
+      }
+
+      // 2. 若已有舊 Channel，先清理退訂
+      if (currentChannel) {
+        log('清理舊有頻道連線...');
+        await supabase.removeChannel(currentChannel);
+        currentChannel = null;
+      }
+
+      const channelName = `realtime:${roomId}`;
+      log(`準備建立 Channel: ${channelName}`);
+
+      // 3. 建立 Channel 實體
+      const channel = supabase.channel(channelName);
+
+      // 4. 【關鍵修正點】在 subscribe() 前註冊所有監聽器 .on()
+      channel
+        .on(
+          'postgres_changes',
+          {
+            event: '*', // 監聽 INSERT, UPDATE, DELETE
+            schema: 'public',
+            table: 'games',
+            filter: `id=eq.${roomId}`
+          },
+          (payload) => {
+            log('收到 Postgres Changes 廣播！', payload);
+          }
+        )
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          log('Presence 在線狀態更新', state);
+        });
+
+      // 5. 事件全數綁定後，最後才發起 .subscribe()
+      channel.subscribe(async (status, err) => {
+        if (err) {
+          log(`訂閱失敗: ${err.message}`);
+          updateStatus('連線錯誤', false);
+          return;
+        }
+
+        if (status === 'SUBSCRIBED') {
+          log(`成功連線至頻道: ${channelName}`);
+          updateStatus('已連線', true);
+
+          // 連線成功後，把房間寫入 DB 測試通知
+          await createRoomInDatabase(roomId, hostId);
+        } else {
+          updateStatus(status, false);
+        }
+      });
+
+      currentChannel = channel;
+    }
+
+    async function createRoomInDatabase(roomId, hostId) {
+      log('嘗試向 DB (games 表) 新增/更新房間資料...');
+      const { data, error } = await supabase
+        .from('games')
+        .upsert([
+          {
+            id: roomId,
+            host_id: hostId,
+            status: 'waiting',
+            updated_at: new Date().toISOString()
+          }
+        ])
+        .select();
+
+      if (error) {
+        log('寫入 DB 失敗 (請確認 games 資料表權限及欄位是否存在)', error);
+      } else {
+        log('成功寫入 DB 房間資料！', data);
+      }
+    }
+
+    async function leaveCurrentRoom() {
+      if (currentChannel && supabase) {
+        await supabase.removeChannel(currentChannel);
+        currentChannel = null;
+        log('已成功退出房間並中斷 Realtime 頻道。');
+        updateStatus('未連線', false);
+      } else {
+        log('目前無作用中的頻道連線。');
+      }
+    }
+  </script>
+</body>
+</html>
